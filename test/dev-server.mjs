@@ -17,7 +17,9 @@ function fakeStore() {
     async list({ prefix = '' } = {}) { return { blobs: [...m.keys()].filter((k) => k.startsWith(prefix)).map((key) => ({ key })) }; },
   };
 }
-const deps = { players: fakeStore(), scores: fakeStore(), secret: 'dev', now: () => Date.now() };
+let lastEmail = null;
+// In dev the reset email is not sent; it is printed here and served at /dev/last-email.
+const deps = { players: fakeStore(), scores: fakeStore(), secret: 'dev', now: () => Date.now(), sendEmail: async (m) => { lastEmail = m; console.log('reset email to', m.to, '\n' + m.text); } };
 
 export function start(port = 8788) {
   const server = http.createServer(async (req, res) => {
@@ -27,6 +29,7 @@ export function start(port = 8788) {
       const r = await handle(new Request(url, { method: req.method, body: ['GET', 'HEAD'].includes(req.method) ? undefined : Buffer.concat(chunks) }), deps);
       res.writeHead(r.status, Object.fromEntries(r.headers)); res.end(await r.text()); return;
     }
+    if (url.pathname === '/dev/last-email') { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(lastEmail)); return; }
     let f = path.join(root, url.pathname === '/' ? 'index.html' : url.pathname);
     if (!f.startsWith(root) || !fs.existsSync(f)) { res.writeHead(404); res.end('not found'); return; }
     res.writeHead(200, { 'content-type': types[path.extname(f)] || 'application/octet-stream' });

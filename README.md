@@ -20,12 +20,29 @@ netlify.toml            publishes public/, functions from netlify/functions
 
 Dragging only the `public` folder into Netlify deploys the game but not the leaderboard function.
 
+## PIN recovery by email (Resend)
+
+Players can add an optional email when they pick a name and PIN. If they forget the PIN, "Forgot PIN?" emails them a
+six digit code that sets a new one, so nobody loses their name or their best score. It needs two more environment
+variables in Netlify (the same Resend key you use for your other games is fine):
+
+* `RESEND_API_KEY`: your Resend API key.
+* `RESEND_FROM`: the sender, on a domain you have verified in Resend, for example `Pawn Force <noreply@yourdomain.com>`.
+
+Without them the game and leaderboard still work and "Forgot PIN?" simply says recovery is not switched on yet.
+
+Emails are stored against the player record only and never returned by the leaderboard. The answer to "Forgot PIN?" is
+the same whether or not a name exists or has an email. Codes are stored hashed, last 15 minutes, die after five wrong
+guesses and cannot be reused, and a name can be sent at most one code a minute and five a day. Only the right PIN can
+add or change the email on a name.
+
 ## Test locally
 
 ```
 npm install
 npm test                       # leaderboard logic
 node test/dev-server.mjs       # http://localhost:8788 with the real leaderboard code, in memory
+                               # reset emails are printed in the terminal instead of sent
 ```
 
 Add `#debug` to the URL to get `window.__pf` for poking at the game from the console.

@@ -13,6 +13,12 @@ const MAX_SCORE = 5_000_000;
 const MIN_GAP_MS = 4000;
 const TOKEN_TTL_MS = 3 * 60 * 60 * 1000;
 const MAX_BODY = 4000;
+const EMAIL_RE = /^[^\s@]{1,64}@[^\s@]+\.[^\s@]{2,}$/;
+const CODE_TTL_MS = 15 * 60 * 1000;     // a reset code works for 15 minutes
+const CODE_GAP_MS = 60 * 1000;          // one email a minute per name
+const CODE_DAY_MAX = 5;                 // and five a day
+const CODE_TRIES = 5;                   // five wrong guesses kills the code
+
 
 // Plausibility limits, derived from the game's own maths (see update() in public/index.html).
 // Speed eases from about 14 m/s towards 34 m/s over a run (x1.25 while promoted to Rook), the score gains
@@ -95,6 +101,21 @@ async function topEntries(d, limit) {
   return rows.filter(Boolean).map((r) => ({ name: r.name, score: r.score, dist: r.dist, orbs: r.orbs }));
 }
 
+function cleanEmail(raw) {
+  if (raw === undefined || raw === null || raw === '') return '';
+  if (typeof raw !== 'string') return null;
+  const e = raw.trim().toLowerCase();
+  if (e === '') return '';
+  return e.length <= 254 && EMAIL_RE.test(e) ? e : null;
+}
+
+// p***@gmail.com, so the owner can see which address is saved without it being readable over a shoulder
+function maskEmail(e) {
+  if (!e) return null;
+  const [u, dom] = e.split('@');
+  return `${u[0]}${'*'.repeat(Math.max(2, Math.min(6, u.length - 1)))}@${dom}`;
+}
+
 async function checkPin(p, pin, nk) {
   return safeEqual(p.hash, await sha256(`${p.salt}:${pin}:${nk}`));
 }
@@ -103,18 +124,73 @@ async function claim(d, body) {
   const name = cleanName(body.name);
   if (!name) return fail(400, 'Use 2 to 16 letters, numbers, spaces, - or _.');
   if (typeof body.pin !== 'string' || !PIN_RE.test(body.pin)) return fail(400, 'PIN must be 4 to 8 digits.');
+  const email = cleanEmail(body.email);
+  if (email === null) return fail(400, 'That email address does not look right.');
   const nk = nameKey(name);
 
   let p = await d.players.get(nk, { type: 'json' });
   if (!p) {
     const salt = crypto.randomUUID();
-    const rec = { name, salt, hash: await sha256(`${salt}:${body.pin}:${nk}`), best: null, rankKey: null, lastAt: 0, created: d.now() };
+    const rec = { name, salt, hash: await sha256(`${salt}:${body.pin}:${nk}`), best: null, rankKey: null, lastAt: 0, created: d.now(), email: email || null };
     const res = await d.players.setJSON(nk, rec, { onlyIfNew: true });
     if (res && res.modified === false) p = await d.players.get(nk, { type: 'json' });
-    else return json({ ok: true, name, created: true, best: null });
+    else return json({ ok: true, name, created: true, best: null, email: maskEmail(rec.email) });
   }
-  if (!(await checkPin(p, body.pin, nk))) return fail(403, 'That name is taken. Enter its PIN to use it.');
-  return json({ ok: true, name: p.name, created: false, best: p.best ? p.best.score : null });
+  if (!(await checkPin(p, body.pin, nk))) return fail(403, 'That name is taken. Enter its PIN to use it, or tap Forgot PIN.');
+  // the right PIN can add or change the recovery email (leaving the box empty keeps the one already saved)
+  if (email && email !== p.email) { p = { ...p, email }; await d.players.setJSON(nk, p); }
+  return json({ ok: true, name: p.name, created: false, best: p.best ? p.best.score : null, email: maskEmail(p.email) });
+}
+
+// Forgot PIN: email a six digit code to the address saved against the name.
+// The answer is the same whether or not the name exists or has an email, so nobody can use this to find out.
+async function forgot(d, body) {
+  const name = cleanName(body.name);
+  if (!name) return fail(400, 'Enter the name you play under.');
+  if (!d.sendEmail) return fail(503, 'PIN recovery is not switched on yet.');
+  const generic = json({ ok: true, message: 'If that name has an email saved, a code is on its way. Check your inbox (and spam).' });
+  const nk = nameKey(name);
+  const p = await d.players.get(nk, { type: 'json' });
+  if (!p || !p.email) return generic;
+  const now = d.now(), r = p.reset || {};
+  const day = Math.floor(now / 86_400_000);
+  const sentToday = r.day === day ? r.sentToday || 0 : 0;
+  if (now - (r.sentAt || 0) < CODE_GAP_MS) return fail(429, 'A code was just sent. Wait a minute before asking for another.');
+  if (sentToday >= CODE_DAY_MAX) return fail(429, 'Too many codes today. Try again tomorrow.');
+  const code = String(Math.floor(100000 + Math.random() * 900000));
+  const reset = { hash: await hmac(d.secret, `reset:${nk}:${code}`), exp: now + CODE_TTL_MS, tries: 0, sentAt: now, day, sentToday: sentToday + 1 };
+  await d.players.setJSON(nk, { ...p, reset });
+  try {
+    await d.sendEmail({
+      to: p.email,
+      subject: 'Your Pawn Force PIN reset code',
+      text: `Your code to reset the PIN for ${p.name} is ${code}.\n\nIt works for 15 minutes. If you did not ask for this, you can ignore this email and nothing will change.`,
+      html: `<div style="font-family:system-ui,sans-serif;font-size:16px;line-height:1.5;color:#111"><p>Your code to reset the PIN for <b>${p.name}</b> is:</p><p style="font-size:32px;font-weight:700;letter-spacing:6px;margin:16px 0">${code}</p><p>It works for 15 minutes. If you did not ask for this, you can ignore this email and nothing will change.</p><p style="color:#666;font-size:13px">Pawn Force</p></div>`,
+    });
+  } catch (err) {
+    console.error('reset email failed', err);
+    await d.players.setJSON(nk, { ...p, reset: { ...reset, hash: null } });
+    return fail(502, 'The email could not be sent. Try again in a minute.');
+  }
+  return generic;
+}
+
+async function resetPin(d, body) {
+  const name = cleanName(body.name);
+  if (!name) return fail(400, 'Enter the name you play under.');
+  if (typeof body.code !== 'string' || !/^\d{6}$/.test(body.code.trim())) return fail(400, 'The code is the six digits in the email.');
+  if (typeof body.pin !== 'string' || !PIN_RE.test(body.pin)) return fail(400, 'New PIN must be 4 to 8 digits.');
+  const nk = nameKey(name);
+  const p = await d.players.get(nk, { type: 'json' });
+  const r = p && p.reset;
+  if (!r || !r.hash || d.now() > r.exp || r.tries >= CODE_TRIES) return fail(400, 'That code has expired. Ask for a new one.');
+  if (!safeEqual(r.hash, await hmac(d.secret, `reset:${nk}:${body.code.trim()}`))) {
+    await d.players.setJSON(nk, { ...p, reset: { ...r, tries: r.tries + 1 } });
+    return fail(403, r.tries + 1 >= CODE_TRIES ? 'Too many wrong codes. Ask for a new one.' : 'That code is not right. Check the email and try again.');
+  }
+  const salt = crypto.randomUUID();
+  await d.players.setJSON(nk, { ...p, salt, hash: await sha256(`${salt}:${body.pin}:${nk}`), reset: { sentAt: r.sentAt, day: r.day, sentToday: r.sentToday } });
+  return json({ ok: true, name: p.name, best: p.best ? p.best.score : null, email: maskEmail(p.email) });
 }
 
 function isInt(n) {
@@ -189,6 +265,8 @@ export async function handle(req, d) {
     switch (body.action) {
       case 'start': return json({ token: await makeToken(d) });
       case 'claim': return await claim(d, body);
+      case 'forgot': return await forgot(d, body);
+      case 'reset': return await resetPin(d, body);
       case 'submit': return await submit(d, body);
       default: return fail(400, 'Unknown action.');
     }

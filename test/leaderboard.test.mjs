@@ -17,7 +17,8 @@ function fakeStore() {
 }
 
 let clock = 1_800_000_000_000;
-const d = { players: fakeStore(), scores: fakeStore(), secret: 'test-secret', now: () => clock };
+const sent = [];
+const d = { players: fakeStore(), scores: fakeStore(), secret: 'test-secret', now: () => clock, sendEmail: async (m) => { sent.push(m); } };
 
 const post = async (body) => {
   const res = await handle(new Request('https://x.test/api/leaderboard', { method: 'POST', body: JSON.stringify(body) }), d);
@@ -165,6 +166,36 @@ await t('a short and a long honest run both verify', async () => {
     const r = await post({ action: 'submit', name: 'Tester', pin: '7777', token, dist, orbs: 0, time, score });
     assert.equal(r.status, 200, `${time}s: ${JSON.stringify(r.data)}`);
   }
+});
+
+await t('email is optional, validated, masked and never public', async () => {
+  assert.equal((await post({ action: 'claim', name: 'Mailer', pin: '1111', email: 'nope' })).status, 400);
+  const r = await post({ action: 'claim', name: 'Mailer', pin: '1111', email: 'Mailer.Test@Example.com' });
+  assert.equal(r.status, 200); assert.match(r.data.email, /^m\*+@example\.com$/);
+  assert.ok(!JSON.stringify((await get()).data).includes('example.com'));
+  assert.equal((await post({ action: 'claim', name: 'Nomail', pin: '2222' })).data.email, null);
+});
+
+await t('forgot PIN emails a code, reset sets a new PIN, old PIN stops working', async () => {
+  sent.length = 0; clock += 120_000;
+  const f = await post({ action: 'forgot', name: 'mailer' });
+  assert.equal(f.status, 200); assert.equal(sent.length, 1); assert.equal(sent[0].to, 'mailer.test@example.com');
+  const code = sent[0].text.match(/is (\d{6})\./)[1];
+  assert.equal((await post({ action: 'reset', name: 'Mailer', code: '000000', pin: '3333' })).status, 403);
+  const ok = await post({ action: 'reset', name: 'Mailer', code, pin: '3333' });
+  assert.equal(ok.status, 200);
+  assert.equal((await post({ action: 'claim', name: 'Mailer', pin: '1111' })).status, 403);
+  assert.equal((await post({ action: 'claim', name: 'Mailer', pin: '3333' })).status, 200);
+  assert.equal((await post({ action: 'reset', name: 'Mailer', code, pin: '4444' })).status, 400, 'code cannot be reused');
+});
+
+await t('forgot gives the same answer for unknown names and names without email, and is rate limited', async () => {
+  sent.length = 0; clock += 120_000;
+  const a = await post({ action: 'forgot', name: 'Ghost' });
+  const b = await post({ action: 'forgot', name: 'Nomail' });
+  assert.deepEqual(a.data, b.data); assert.equal(sent.length, 0);
+  await post({ action: 'forgot', name: 'Mailer' });
+  assert.equal((await post({ action: 'forgot', name: 'Mailer' })).status, 429);
 });
 
 console.log(`\n${passed} tests passed`);
