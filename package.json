@@ -1,0 +1,14 @@
+{
+  "name": "pawn-force",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Pawn Force: an endless chess runner PWA with a Netlify Blobs leaderboard.",
+  "scripts": {
+    "test": "node test/leaderboard.test.mjs"
+  },
+  "dependencies": {
+    "@netlify/blobs": "^8.1.0",
+    "@netlify/functions": "^3.0.0"
+  }
+}
