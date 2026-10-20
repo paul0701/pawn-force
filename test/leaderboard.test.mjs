@@ -198,4 +198,35 @@ await t('forgot gives the same answer for unknown names and names without email,
   assert.equal((await post({ action: 'forgot', name: 'Mailer' })).status, 429);
 });
 
+await t('trophies and stats sync: union of trophies, higher counters, wrong PIN refused, junk trimmed', async () => {
+  await post({ action: 'claim', name: 'Trophy', pin: '5555' });
+  const phone = { ach: { first_run: 1000, promo1: 2000 }, bestElo: 900, bestDist: 500, runs: 4, totalOrbs: 80, skin: 'jade', trail: 'none' };
+  assert.equal((await post({ action: 'progress', name: 'Trophy', pin: '0000', progress: phone })).status, 403);
+  assert.equal((await post({ action: 'progress', name: 'Nobody', pin: '5555', progress: phone })).status, 403);
+  const a = await post({ action: 'progress', name: 'trophy', pin: '5555', progress: phone });
+  assert.equal(a.status, 200); assert.deepEqual(Object.keys(a.data.progress.ach).sort(), ['first_run', 'promo1']);
+  // a second device with different trophies and lower counters
+  const laptop = { ach: { first_run: 500, gm: 3000, 'BAD ID': 5 }, bestElo: 2650, bestDist: 300, runs: 2, totalOrbs: 999999999999, skin: 'ivory', trail: 'ember' };
+  const b = await post({ action: 'progress', name: 'Trophy', pin: '5555', progress: laptop });
+  const g = b.data.progress;
+  assert.deepEqual(Object.keys(g.ach).sort(), ['first_run', 'gm', 'promo1']);
+  assert.equal(g.ach.first_run, 500, 'earliest date wins');
+  assert.deepEqual([g.bestElo, g.bestDist, g.runs], [2650, 500, 4]);
+  assert.equal(g.totalOrbs, 1_000_000_000, 'absurd numbers are capped');
+  // signing in on a brand new device brings it all down
+  const c = await post({ action: 'claim', name: 'Trophy', pin: '5555' });
+  assert.deepEqual(Object.keys(c.data.progress.ach).sort(), ['first_run', 'gm', 'promo1']);
+  assert.equal(c.data.progress.bestElo, 2650);
+  // a name that has never synced has nothing to bring down, and garbage is trimmed to nothing
+  assert.equal((await post({ action: 'claim', name: 'Fresh One', pin: '6666' })).data.progress, null);
+  const z = await post({ action: 'progress', name: 'Fresh One', pin: '6666', progress: 'rubbish' });
+  assert.deepEqual(z.data.progress.ach, {}); assert.equal(z.data.progress.runs, 0);
+});
+
+await t('syncing trophies never disturbs the score or the leaderboard', async () => {
+  const before = JSON.stringify((await get('?limit=50')).data);
+  await post({ action: 'progress', name: 'Trophy', pin: '5555', progress: { ach: { d1000: 1 } } });
+  assert.equal(JSON.stringify((await get('?limit=50')).data), before);
+});
+
 console.log(`\n${passed} tests passed`);

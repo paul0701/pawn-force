@@ -53,3 +53,7 @@ The leaderboard ranks by score. The server cannot replay a run, so it checks the
 the game can actually produce (speed range, orbs per second, score per metre and per second) and requires a signed
 run token that proves enough real time passed. If you change speeds or scoring in the game, update the constants at
 the top of `netlify/lib/core.mjs` to match.
+
+## Trophies and stats
+
+Trophies, skins, trails and stats sync to the name and PIN (stored under a separate key in the pf-players store, so they can never interfere with scores). Signing in on a new device or address brings them down, and each finished run sends new ones up. Trophies join together across devices, counters keep the higher figure.

@@ -116,6 +116,57 @@ function maskEmail(e) {
   return `${u[0]}${'*'.repeat(Math.max(2, Math.min(6, u.length - 1)))}@${dom}`;
 }
 
+// ---- trophies and stats, kept under their own key so a score submit can never overwrite them ----
+const PROG_ID_RE = /^[a-z0-9_]{1,40}$/;
+const progKey = (nk) => `~p/${nk}`;
+const clampInt = (v, max) => Math.max(0, Math.min(Math.floor(Number(v)) || 0, max));
+const idOr = (v, fallback) => (typeof v === 'string' && PROG_ID_RE.test(v) ? v : fallback);
+
+// Anything the browser sends is trimmed to a known shape: trophy ids, bounded numbers, cosmetic names.
+function cleanProgress(raw) {
+  const out = { ach: {}, bestElo: 0, bestDist: 0, runs: 0, totalOrbs: 0, skin: 'ivory', trail: 'none' };
+  if (!raw || typeof raw !== 'object') return out;
+  if (raw.ach && typeof raw.ach === 'object') {
+    let n = 0;
+    for (const [k, v] of Object.entries(raw.ach)) {
+      if (n >= 60) break;
+      if (!PROG_ID_RE.test(k)) continue;
+      out.ach[k] = clampInt(v, 4_102_444_800_000) || 1; n++;
+    }
+  }
+  out.bestElo = clampInt(raw.bestElo, 100_000); out.bestDist = clampInt(raw.bestDist, 10_000_000);
+  out.runs = clampInt(raw.runs, 10_000_000); out.totalOrbs = clampInt(raw.totalOrbs, 1_000_000_000);
+  out.skin = idOr(raw.skin, 'ivory'); out.trail = idOr(raw.trail, 'none');
+  return out;
+}
+
+// Trophies are a union (earliest date wins), the counters keep the higher figure, the cosmetic pick follows the latest save.
+function mergeProgress(old, inc) {
+  const a = cleanProgress(old), b = cleanProgress(inc);
+  const ach = { ...a.ach };
+  for (const [k, v] of Object.entries(b.ach)) ach[k] = ach[k] ? Math.min(ach[k], v) : v;
+  return {
+    ach, bestElo: Math.max(a.bestElo, b.bestElo), bestDist: Math.max(a.bestDist, b.bestDist),
+    runs: Math.max(a.runs, b.runs), totalOrbs: Math.max(a.totalOrbs, b.totalOrbs),
+    skin: b.skin, trail: b.trail,
+  };
+}
+
+async function readProgress(d, nk) { return (await d.players.get(progKey(nk), { type: 'json' })) || null; }
+
+async function progress(d, body) {
+  const name = cleanName(body.name);
+  if (!name) return fail(400, 'Enter the name you play under.');
+  if (typeof body.pin !== 'string' || !PIN_RE.test(body.pin)) return fail(400, 'PIN must be 4 to 8 digits.');
+  const nk = nameKey(name);
+  const p = await d.players.get(nk, { type: 'json' });
+  if (!p) return fail(403, 'Unknown name. Set your name first.');
+  if (!(await checkPin(p, body.pin, nk))) return fail(403, 'Wrong PIN for that name.');
+  const merged = mergeProgress(await readProgress(d, nk), body.progress);
+  await d.players.setJSON(progKey(nk), merged);
+  return json({ ok: true, progress: merged });
+}
+
 async function checkPin(p, pin, nk) {
   return safeEqual(p.hash, await sha256(`${p.salt}:${pin}:${nk}`));
 }
@@ -134,12 +185,12 @@ async function claim(d, body) {
     const rec = { name, salt, hash: await sha256(`${salt}:${body.pin}:${nk}`), best: null, rankKey: null, lastAt: 0, created: d.now(), email: email || null };
     const res = await d.players.setJSON(nk, rec, { onlyIfNew: true });
     if (res && res.modified === false) p = await d.players.get(nk, { type: 'json' });
-    else return json({ ok: true, name, created: true, best: null, email: maskEmail(rec.email) });
+    else return json({ ok: true, name, created: true, best: null, email: maskEmail(rec.email), progress: null });
   }
   if (!(await checkPin(p, body.pin, nk))) return fail(403, 'That name is taken. Enter its PIN to use it, or tap Forgot PIN.');
   // the right PIN can add or change the recovery email (leaving the box empty keeps the one already saved)
   if (email && email !== p.email) { p = { ...p, email }; await d.players.setJSON(nk, p); }
-  return json({ ok: true, name: p.name, created: false, best: p.best ? p.best.score : null, email: maskEmail(p.email) });
+  return json({ ok: true, name: p.name, created: false, best: p.best ? p.best.score : null, email: maskEmail(p.email), progress: await readProgress(d, nk) });
 }
 
 // Forgot PIN: email a six digit code to the address saved against the name.
@@ -190,7 +241,7 @@ async function resetPin(d, body) {
   }
   const salt = crypto.randomUUID();
   await d.players.setJSON(nk, { ...p, salt, hash: await sha256(`${salt}:${body.pin}:${nk}`), reset: { sentAt: r.sentAt, day: r.day, sentToday: r.sentToday } });
-  return json({ ok: true, name: p.name, best: p.best ? p.best.score : null, email: maskEmail(p.email) });
+  return json({ ok: true, name: p.name, best: p.best ? p.best.score : null, email: maskEmail(p.email), progress: await readProgress(d, nk) });
 }
 
 function isInt(n) {
@@ -268,6 +319,7 @@ export async function handle(req, d) {
       case 'forgot': return await forgot(d, body);
       case 'reset': return await resetPin(d, body);
       case 'submit': return await submit(d, body);
+      case 'progress': return await progress(d, body);
       default: return fail(400, 'Unknown action.');
     }
   } catch (err) {
