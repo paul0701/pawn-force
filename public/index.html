@@ -1734,7 +1734,7 @@ const SPK_OFF = '<svg viewBox="0 0 24 24"><path d="M4 9h4l5-4v14l-5-4H4z"/><path
 function refreshMute() { $('muteBtn').innerHTML = save.muted ? SPK_OFF : SPK_ON; $('menuMute').textContent = 'Sound: ' + (save.muted ? 'Off' : 'On'); }
 function refreshMenu() {
   const n = Object.keys(save.ach).length;
-  $('menuStats').innerHTML = save.runs ? 'Best <b>' + fmt(save.bestScore) + '</b> &middot; Peak ELO <b>' + fmt(save.bestElo) + '</b> &middot; ' + titleFor(save.bestElo) + '<br>Trophies ' + n + '/' + ACH.length : 'Swipe to dodge. Swipe up to jump. Survive the tournaments.';
+  $('menuStats').innerHTML = (save.runs || save.bestScore) ? 'Best <b>' + fmt(save.bestScore) + '</b> &middot; Peak ELO <b>' + fmt(save.bestElo) + '</b> &middot; ' + titleFor(save.bestElo) + '<br>Trophies ' + n + '/' + ACH.length : 'Swipe to dodge. Swipe up to jump. Survive the tournaments.';
 }
 /* ---------- leaderboard ----------
    The game never depends on this. If the network or the function is unavailable, runs still play and the
@@ -1760,6 +1760,8 @@ function lbPrepare() {
   if (!LB.name) { lbStatus('Pick a name to put this score on the leaderboard.'); $('addBtn').classList.remove('hidden'); return; }
   lbSubmit();
 }
+// The online best is the truth. Signing in on a new device or address pulls it down so the two never disagree.
+function lbSyncBest(b) { b = Math.floor(Number(b) || 0); if (b > save.bestScore) { save.bestScore = b; persist(); try { refreshMenu(); } catch (e) {} } }
 function lbSubmit() {
   const run = LB.pending; if (!run) return;
   const id = LB.runId;
@@ -1770,6 +1772,8 @@ function lbSubmit() {
       if (LB.runId !== id) return;
       if (r.ok && r.data) {
         lbStatus(r.data.improved ? 'New best for ' + LB.name + '. You are #' + r.data.rank + ' on the leaderboard.' : 'Your leaderboard best is still ' + Number(r.data.best).toLocaleString() + ' (rank #' + r.data.rank + ').');
+        lbSyncBest(r.data.best);
+        if (!r.data.improved && Number(r.data.best) > run.score && S.isPB) { S.isPB = false; $('oPB').innerHTML = '<div class="stats-line">Best <b>' + fmt(save.bestScore) + '</b></div>'; }
         LB.pending = null;
       } else lbStatus((r.data && r.data.message) || 'The leaderboard rejected that score.');
     });
@@ -1795,7 +1799,7 @@ function lbNamePanel(body) {
     err.textContent = 'Checking…'; $('nameSave').disabled = true;
     lbApi({ action: 'claim', name, pin, email }).then(r => {
       if (r.ok && r.data) {
-        LB.name = r.data.name || name; LB.pin = pin; LB.email = r.data.email || ''; lbSaveId();
+        LB.name = r.data.name || name; LB.pin = pin; LB.email = r.data.email || ''; lbSaveId(); lbSyncBest(r.data.best);
         lbWho(); $('panel').classList.add('hidden');
         if (LB.pending) { $('addBtn').classList.add('hidden'); lbSubmit(); }
       } else err.textContent = (r.data && r.data.message) || 'Could not save that name.';
@@ -1829,7 +1833,7 @@ function lbResetPanel(body, nameHint) {
     err.textContent = 'Resetting…'; $('rDo').disabled = true;
     lbApi({ action: 'reset', name, code, pin }).then(r => {
       if (r.ok && r.data) {
-        LB.name = r.data.name || name; LB.pin = pin; LB.email = r.data.email || LB.email; lbSaveId(); lbWho();
+        LB.name = r.data.name || name; LB.pin = pin; LB.email = r.data.email || LB.email; lbSaveId(); lbWho(); lbSyncBest(r.data.best);
         $('panel').classList.add('hidden');
         if (LB.pending) { $('addBtn').classList.add('hidden'); lbSubmit(); } else lbStatus('PIN reset. You are signed in as ' + LB.name + '.');
       } else err.textContent = (r.data && r.data.message) || 'Could not reset the PIN.';
