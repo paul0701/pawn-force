@@ -124,7 +124,7 @@ const idOr = (v, fallback) => (typeof v === 'string' && PROG_ID_RE.test(v) ? v :
 
 // Anything the browser sends is trimmed to a known shape: trophy ids, bounded numbers, cosmetic names.
 function cleanProgress(raw) {
-  const out = { ach: {}, bestElo: 0, bestDist: 0, runs: 0, totalOrbs: 0, skin: 'ivory', trail: 'none' };
+  const out = { ach: {}, bestElo: 0, bestDist: 0, runs: 0, totalOrbs: 0, skin: 'ivory', trail: 'none', lookAt: 0 };
   if (!raw || typeof raw !== 'object') return out;
   if (raw.ach && typeof raw.ach === 'object') {
     let n = 0;
@@ -136,11 +136,11 @@ function cleanProgress(raw) {
   }
   out.bestElo = clampInt(raw.bestElo, 100_000); out.bestDist = clampInt(raw.bestDist, 10_000_000);
   out.runs = clampInt(raw.runs, 10_000_000); out.totalOrbs = clampInt(raw.totalOrbs, 1_000_000_000);
-  out.skin = idOr(raw.skin, 'ivory'); out.trail = idOr(raw.trail, 'none');
+  out.skin = idOr(raw.skin, 'ivory'); out.trail = idOr(raw.trail, 'none'); out.lookAt = clampInt(raw.lookAt, 4_102_444_800_000);
   return out;
 }
 
-// Trophies are a union (earliest date wins), the counters keep the higher figure, the cosmetic pick follows the latest save.
+// Trophies are a union (earliest date wins), the counters keep the higher figure, and the cosmetic pick follows whichever device chose last.
 function mergeProgress(old, inc) {
   const a = cleanProgress(old), b = cleanProgress(inc);
   const ach = { ...a.ach };
@@ -148,8 +148,15 @@ function mergeProgress(old, inc) {
   return {
     ach, bestElo: Math.max(a.bestElo, b.bestElo), bestDist: Math.max(a.bestDist, b.bestDist),
     runs: Math.max(a.runs, b.runs), totalOrbs: Math.max(a.totalOrbs, b.totalOrbs),
-    skin: b.skin, trail: b.trail,
+    ...lookWins(a, b),
   };
+}
+
+// The look (skin and trail) that was chosen most recently wins. Two untouched defaults never wipe a real choice.
+function lookWins(a, b) {
+  const isDefault = (x) => x.skin === 'ivory' && x.trail === 'none';
+  const pick = b.lookAt > a.lookAt || (b.lookAt === a.lookAt && !(isDefault(b) && !isDefault(a))) ? b : a;
+  return { skin: pick.skin, trail: pick.trail, lookAt: pick.lookAt };
 }
 
 async function readProgress(d, nk) { return (await d.players.get(progKey(nk), { type: 'json' })) || null; }

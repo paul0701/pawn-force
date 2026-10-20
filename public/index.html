@@ -327,7 +327,7 @@ const fmt = n => Math.floor(n).toLocaleString('en-US');
 
 // ===================== PERSISTENCE =====================
 const SAVE_KEY = 'pawnforce2_save';
-const save = { bestScore: 0, bestElo: 0, bestDist: 0, runs: 0, totalOrbs: 0, ach: {}, skin: 'ivory', trail: 'none', muted: false, tutorial: false };
+const save = { bestScore: 0, bestElo: 0, bestDist: 0, runs: 0, totalOrbs: 0, ach: {}, skin: 'ivory', trail: 'none', lookAt: 0, muted: false, tutorial: false };
 try {
   const raw = localStorage.getItem(SAVE_KEY);
   if (raw) Object.assign(save, JSON.parse(raw));
@@ -1764,15 +1764,20 @@ function lbPrepare() {
 // The online best is the truth. Signing in on a new device or address pulls it down so the two never disagree.
 function lbSyncBest(b) { b = Math.floor(Number(b) || 0); if (b > save.bestScore) { save.bestScore = b; persist(); try { refreshMenu(); } catch (e) {} } }
 // Trophies, skins, trails and stats follow the name and PIN. Trophies join together, the counters keep the higher figure.
-function lbProgressOut() { return { ach: save.ach, bestElo: save.bestElo, bestDist: save.bestDist, runs: save.runs, totalOrbs: save.totalOrbs, skin: save.skin, trail: save.trail }; }
+function lbProgressOut() { return { ach: save.ach, bestElo: save.bestElo, bestDist: save.bestDist, runs: save.runs, totalOrbs: save.totalOrbs, skin: save.skin, trail: save.trail, lookAt: save.lookAt || 0 }; }
 function lbMergeIn(pr) {
   if (!pr || typeof pr !== 'object') return;
   let changed = false;
   for (const [k, v] of Object.entries(pr.ach || {})) if (ACH.some(a => a.id === k) && !save.ach[k]) { save.ach[k] = v; changed = true; }
   for (const k of ['bestElo', 'bestDist', 'runs', 'totalOrbs']) { const v = Math.floor(Number(pr[k]) || 0); if (v > save[k]) { save[k] = v; changed = true; } }
-  // a brand new device still wearing the default look picks up the cosmetics chosen elsewhere
-  const sk = SKINS.find(x => x.id === pr.skin); if (save.skin === 'ivory' && sk && unlockedReq(sk.req)) { save.skin = sk.id; changed = true; }
-  const tr = TRAILS.find(x => x.id === pr.trail); if (save.trail === 'none' && tr && unlockedReq(tr.req)) { save.trail = tr.id; changed = true; }
+  // the look (skin and trail) that was chosen most recently, on any device, is the one everywhere
+  const srvAt = Math.floor(Number(pr.lookAt) || 0), myAt = save.lookAt || 0;
+  if (srvAt > myAt || (srvAt === myAt && save.skin === 'ivory' && save.trail === 'none')) {
+    const sk = SKINS.find(x => x.id === pr.skin), tr = TRAILS.find(x => x.id === pr.trail);
+    if (sk && unlockedReq(sk.req) && sk.id !== save.skin) { save.skin = sk.id; changed = true; }
+    if (tr && unlockedReq(tr.req) && tr.id !== save.trail) { save.trail = tr.id; changed = true; }
+    if (srvAt > myAt) { save.lookAt = srvAt; changed = true; }
+  }
   if (changed) { persist(); try { refreshMenu(); } catch (e) {} }
 }
 function lbPushProgress() {
@@ -1881,8 +1886,8 @@ function openPanel(kind, arg) {
     const skinT = SKINS.map(s => { const ok = unlockedReq(s.req), req = s.req ? ACH.find(a => a.id === s.req).n : ''; return '<button class="tile' + (save.skin === s.id ? ' sel' : '') + (ok ? '' : ' locked') + '" data-skin="' + s.id + '" data-testid="skin-' + s.id + '"><img alt="" src="' + iconURL('pawn', s.b, s.o) + '">' + s.n + (ok ? '' : '<small>Trophy: ' + req + '</small>') + '</button>'; }).join('');
     const trT = TRAILS.map(t => { const ok = unlockedReq(t.req), req = t.req ? ACH.find(a => a.id === t.req).n : ''; const bg = t.c ? 'linear-gradient(135deg,' + t.c.join(',') + ')' : 'rgba(255,255,255,.08)'; return '<button class="tile' + (save.trail === t.id ? ' sel' : '') + (ok ? '' : ' locked') + '" data-trail="' + t.id + '" data-testid="trail-' + t.id + '"><span class="sw" style="background:' + bg + '"></span>' + t.n + (ok ? '' : '<small>Trophy: ' + req + '</small>') + '</button>'; }).join('');
     body.innerHTML = '<div class="sec">PAWN SKINS</div><div class="grid">' + skinT + '</div><div class="sec">TRAILS</div><div class="grid">' + trT + '</div><p class="stats-line" style="margin-top:14px">Cosmetics only. They never change gameplay.</p>';
-    body.querySelectorAll('[data-skin]').forEach(b => b.addEventListener('click', () => { const s = SKINS.find(x => x.id === b.dataset.skin); if (!unlockedReq(s.req)) return; save.skin = s.id; persist(); AU.init(); AU.click(); openPanel('locker'); }));
-    body.querySelectorAll('[data-trail]').forEach(b => b.addEventListener('click', () => { const t = TRAILS.find(x => x.id === b.dataset.trail); if (!unlockedReq(t.req)) return; save.trail = t.id; persist(); AU.init(); AU.click(); openPanel('locker'); }));
+    body.querySelectorAll('[data-skin]').forEach(b => b.addEventListener('click', () => { const s = SKINS.find(x => x.id === b.dataset.skin); if (!unlockedReq(s.req)) return; save.skin = s.id; save.lookAt = Date.now(); persist(); lbPushProgress(); AU.init(); AU.click(); openPanel('locker'); }));
+    body.querySelectorAll('[data-trail]').forEach(b => b.addEventListener('click', () => { const t = TRAILS.find(x => x.id === b.dataset.trail); if (!unlockedReq(t.req)) return; save.trail = t.id; save.lookAt = Date.now(); persist(); lbPushProgress(); AU.init(); AU.click(); openPanel('locker'); }));
   } else if (kind === 'board') { lbBoardPanel(body);
   } else if (kind === 'reset') { lbResetPanel(body, arg); setTimeout(() => { const n = $('rName'); if (n) n.focus(); }, 50);
   } else if (kind === 'name') { lbNamePanel(body); setTimeout(() => { const n = $('nameIn'); if (n) n.focus(); }, 50);

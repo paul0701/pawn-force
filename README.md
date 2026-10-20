@@ -56,4 +56,4 @@ the top of `netlify/lib/core.mjs` to match.
 
 ## Trophies and stats
 
-Trophies, skins, trails and stats sync to the name and PIN (stored under a separate key in the pf-players store, so they can never interfere with scores). Signing in on a new device or address brings them down, and each finished run sends new ones up. Trophies join together across devices, counters keep the higher figure.
+Trophies, skins, trails and stats sync to the name and PIN (stored under a separate key in the pf-players store, so they can never interfere with scores). Signing in on a new device or address brings them down, and each finished run sends new ones up. Trophies join together across devices, counters keep the higher figure, and the skin and trail you chose most recently on any device is the one every device uses.

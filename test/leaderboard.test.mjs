@@ -229,4 +229,18 @@ await t('syncing trophies never disturbs the score or the leaderboard', async ()
   assert.equal(JSON.stringify((await get('?limit=50')).data), before);
 });
 
+await t('the look chosen most recently follows you, and a plain default never wipes a real choice', async () => {
+  await post({ action: 'claim', name: 'Stylist', pin: '7777' });
+  const send = (progress) => post({ action: 'progress', name: 'Stylist', pin: '7777', progress });
+  let r = await send({ ach: { first_run: 1, queen: 1 }, skin: 'aurum', trail: 'none', lookAt: 2000 });
+  assert.equal(r.data.progress.skin, 'aurum');
+  r = await send({ ach: {}, skin: 'ebony', trail: 'ember', lookAt: 1000 });   // an older choice from another device
+  assert.deepEqual([r.data.progress.skin, r.data.progress.trail], ['aurum', 'none']);
+  r = await send({ ach: {}, skin: 'ebony', trail: 'ember', lookAt: 3000 });   // a newer choice wins
+  assert.deepEqual([r.data.progress.skin, r.data.progress.trail], ['ebony', 'ember']);
+  r = await send({ ach: {}, skin: 'ivory', trail: 'none', lookAt: 0 });       // a fresh device that never chose anything
+  assert.deepEqual([r.data.progress.skin, r.data.progress.trail], ['ebony', 'ember']);
+  assert.equal((await post({ action: 'claim', name: 'Stylist', pin: '7777' })).data.progress.lookAt, 3000);
+});
+
 console.log(`\n${passed} tests passed`);
