@@ -7,7 +7,7 @@
 // Each player only ever writes their own two records, so there is no cross-player write race.
 
 const NAME_RE = /^[A-Za-z0-9 _-]{2,16}$/;
-const PIN_RE = /^\d{4,8}$/;
+const PIN_RE = /^\d{6}$/;
 const SCORE_BASE = 10_000_000;
 const MAX_SCORE = 5_000_000;
 const MIN_GAP_MS = 4000;
@@ -164,7 +164,7 @@ async function readProgress(d, nk) { return (await d.players.get(progKey(nk), { 
 async function progress(d, body) {
   const name = cleanName(body.name);
   if (!name) return fail(400, 'Enter the name you play under.');
-  if (typeof body.pin !== 'string' || !PIN_RE.test(body.pin)) return fail(400, 'PIN must be 4 to 8 digits.');
+  if (typeof body.pin !== 'string' || !PIN_RE.test(body.pin)) return fail(400, 'PIN must be 6 digits.');
   const nk = nameKey(name);
   const p = await d.players.get(nk, { type: 'json' });
   if (!p) return fail(403, 'Unknown name. Set your name first.');
@@ -181,7 +181,7 @@ async function checkPin(p, pin, nk) {
 async function claim(d, body) {
   const name = cleanName(body.name);
   if (!name) return fail(400, 'Use 2 to 16 letters, numbers, spaces, - or _.');
-  if (typeof body.pin !== 'string' || !PIN_RE.test(body.pin)) return fail(400, 'PIN must be 4 to 8 digits.');
+  if (typeof body.pin !== 'string' || !PIN_RE.test(body.pin)) return fail(400, 'PIN must be 6 digits.');
   const email = cleanEmail(body.email);
   if (email === null) return fail(400, 'That email address does not look right.');
   const nk = nameKey(name);
@@ -237,7 +237,7 @@ async function resetPin(d, body) {
   const name = cleanName(body.name);
   if (!name) return fail(400, 'Enter the name you play under.');
   if (typeof body.code !== 'string' || !/^\d{6}$/.test(body.code.trim())) return fail(400, 'The code is the six digits in the email.');
-  if (typeof body.pin !== 'string' || !PIN_RE.test(body.pin)) return fail(400, 'New PIN must be 4 to 8 digits.');
+  if (typeof body.pin !== 'string' || !PIN_RE.test(body.pin)) return fail(400, 'New PIN must be 6 digits.');
   const nk = nameKey(name);
   const p = await d.players.get(nk, { type: 'json' });
   const r = p && p.reset;
