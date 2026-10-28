@@ -1739,13 +1739,66 @@ function refreshMenu() {
 /* ---------- leaderboard ----------
    The game never depends on this. If the network or the function is unavailable, runs still play and the
    personal best stays on the device. */
-const API = '/api/leaderboard';
+// Shared accounts service — one login across the whole arcade. This module keeps
+// its own UI and progress-merge; only the network layer is routed to central.
+const CENTRAL = 'https://agnostic.accounts.agnosticsolutions.co.uk';
+const GAME = 'pawn-force';
+let _auth = null; // central Bearer token for this session
 const LB = { name: '', pin: '', email: '', token: null, tokenP: null, pending: null, runId: 0 };
 try { LB.name = localStorage.getItem('pf_name') || ''; LB.pin = localStorage.getItem('pf_pin') || ''; LB.email = localStorage.getItem('pf_email') || ''; } catch (e) {}
 function lbSaveId() { try { localStorage.setItem('pf_name', LB.name); localStorage.setItem('pf_pin', LB.pin); localStorage.setItem('pf_email', LB.email || ''); } catch (e) {} }
-function lbApi(body) {
-  return fetch(API, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+function lbWeekId() {
+  var d = new Date(), t = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  var day = t.getUTCDay() || 7; t.setUTCDate(t.getUTCDate() + 4 - day);
+  var y0 = new Date(Date.UTC(t.getUTCFullYear(), 0, 1));
+  return t.getUTCFullYear() + '-W' + String(Math.ceil(((t - y0) / 864e5 + 1) / 7)).padStart(2, '0');
+}
+function cFetch(path, opts) {
+  opts = opts || {};
+  const headers = { 'content-type': 'application/json' };
+  if (opts.auth && _auth) headers['authorization'] = 'Bearer ' + _auth;
+  return fetch(CENTRAL + path, { method: 'POST', headers, body: JSON.stringify(opts.body || {}) })
     .then(r => r.json().catch(() => null).then(data => ({ ok: r.ok, status: r.status, data })));
+}
+function cAuth(name, pin) {
+  if (_auth) return Promise.resolve(true);
+  if (!name || !pin) return Promise.resolve(false);
+  return cFetch('/api/auth/login', { body: { username: name, pin } }).then(r => { if (r.ok && r.data && r.data.token) { _auth = r.data.token; return true; } return false; });
+}
+// Speaks the old action protocol, routed to the shared accounts service, so the
+// rest of this module and its UI are unchanged.
+function lbApi(body) {
+  const a = body && body.action;
+  if (a === 'start') return Promise.resolve({ ok: true, status: 200, data: { token: 'central' } });
+  if (a === 'claim') {
+    return cFetch('/api/auth/register', { body: { username: body.name, pin: body.pin, email: body.email || '' } }).then(r => {
+      if (r.ok && r.data && r.data.token) { _auth = r.data.token; return r; }
+      if (r.status === 409) return cFetch('/api/auth/login', { body: { username: body.name, pin: body.pin } }).then(r2 => { if (r2.ok && r2.data && r2.data.token) _auth = r2.data.token; return r2; });
+      return r;
+    }).then(r => {
+      if (!(r.ok && r.data && r.data.token)) return { ok: false, status: r.status, data: { message: (r.data && r.data.detail) || 'Could not sign in.' } };
+      const g = (r.data.games || {})[GAME] || {};
+      return { ok: true, status: 200, data: { name: r.data.username, email: r.data.email || '', best: Number(g.best) || 0, progress: g.state || {} } };
+    });
+  }
+  if (a === 'progress') {
+    return cAuth(body.name, body.pin).then(ok => ok
+      ? cFetch('/api/sync', { auth: true, body: { game: GAME, state: body.progress } }).then(r => ({ ok: r.ok, status: r.status, data: { progress: (r.data && r.data.state) || {} } }))
+      : { ok: false, status: 401, data: {} });
+  }
+  if (a === 'submit') {
+    const score = Math.floor(Number(body.score) || 0), wk = lbWeekId();
+    return cAuth(body.name, body.pin).then(ok => ok
+      ? cFetch('/api/sync', { auth: true, body: { game: GAME, best: score, week: wk, week_best: score } }).then(r => {
+          if (!(r.ok && r.data)) return { ok: false, status: r.status, data: { message: (r.data && r.data.detail) || 'The leaderboard rejected that score.' } };
+          const best = Number(r.data.best) || 0;
+          return { ok: true, status: 200, data: { improved: score >= best, rank: r.data.rank, best } };
+        })
+      : { ok: false, status: 401, data: { message: 'Sign in to post a score.' } });
+  }
+  if (a === 'forgot') return cFetch('/api/auth/forgot', { body: { username: body.name } });
+  if (a === 'reset') return cFetch('/api/auth/reset', { body: { username: body.name, code: body.code, pin: body.pin } }).then(r => { if (r.ok && r.data && r.data.token) _auth = r.data.token; return r; });
+  return Promise.resolve({ ok: false, status: 400, data: {} });
 }
 function lbBegin() {
   const id = ++LB.runId; LB.token = null; LB.pending = null; $('lbStatus').textContent = '';
@@ -1803,9 +1856,9 @@ function lbSubmit() {
   }).catch(() => { if (LB.runId === id) lbStatus('Leaderboard unreachable. Your best is still saved on this device.'); });
 }
 function lbNamePanel(body) {
-  body.innerHTML = '<p class="lbnote">Your name shows on the leaderboard. Letters, numbers, spaces, - and _ only, up to 16 characters. Add a 4 to 8 digit PIN so only you can use it. Enter the same name and PIN on another device to carry on there.</p>' +
+  body.innerHTML = '<p class="lbnote">Your name shows on the leaderboard. Letters, numbers, spaces, - and _ only, up to 16 characters. Add a 6-digit PIN so only you can use it. Enter the same name and PIN on another device to carry on there.</p>' +
     '<label class="lbfield" for="nameIn">NAME<input id="nameIn" maxlength="16" autocomplete="off" autocapitalize="off" spellcheck="false" data-testid="name-input"></label>' +
-    '<label class="lbfield" for="pinIn">PIN<input id="pinIn" type="password" inputmode="numeric" maxlength="8" autocomplete="off" data-testid="pin-input"></label>' +
+    '<label class="lbfield" for="pinIn">PIN<input id="pinIn" type="password" inputmode="numeric" maxlength="6" autocomplete="off" data-testid="pin-input"></label>' +
     '<label class="lbfield" for="emailIn">EMAIL (OPTIONAL)<input id="emailIn" type="email" inputmode="email" maxlength="254" autocomplete="email" autocapitalize="off" spellcheck="false" data-testid="email-input"></label>' +
     '<p class="lbnote" style="font-size:12px;color:var(--muted)">Save an email and you can get a code to reset your PIN if you ever forget it, so you never lose your name or your best score. It is never shown on the leaderboard.</p>' +
     '<p class="lberr" id="nameErr" role="alert"></p><button id="nameSave" class="cta" data-testid="name-save-button" style="width:100%">SAVE</button>' +
@@ -1816,7 +1869,7 @@ function lbNamePanel(body) {
   const save1 = () => {
     const name = $('nameIn').value.trim().replace(/\s+/g, ' '), pin = $('pinIn').value.trim(), err = $('nameErr');
     if (!/^[A-Za-z0-9 _-]{2,16}$/.test(name)) { err.textContent = 'Use 2 to 16 letters, numbers, spaces, - or _.'; return; }
-    if (!/^\d{4,8}$/.test(pin)) { err.textContent = 'PIN must be 4 to 8 digits.'; return; }
+    if (!/^\d{6}$/.test(pin)) { err.textContent = 'PIN must be 6 digits.'; return; }
     const email = $('emailIn').value.trim();
     if (email && !/^[^\s@]{1,64}@[^\s@]+\.[^\s@]{2,}$/.test(email)) { err.textContent = 'That email address does not look right.'; return; }
     err.textContent = 'Checking…'; $('nameSave').disabled = true;
@@ -1836,7 +1889,7 @@ function lbResetPanel(body, nameHint) {
     '<label class="lbfield" for="rName">NAME<input id="rName" maxlength="16" autocomplete="off" autocapitalize="off" spellcheck="false" data-testid="reset-name-input"></label>' +
     '<button id="rSend" class="ghost" data-testid="reset-send-button" style="width:100%;margin-bottom:14px">Email me a code</button>' +
     '<label class="lbfield" for="rCode">CODE FROM THE EMAIL<input id="rCode" inputmode="numeric" maxlength="6" autocomplete="one-time-code" data-testid="reset-code-input"></label>' +
-    '<label class="lbfield" for="rPin">NEW PIN<input id="rPin" type="password" inputmode="numeric" maxlength="8" autocomplete="off" data-testid="reset-pin-input"></label>' +
+    '<label class="lbfield" for="rPin">NEW PIN<input id="rPin" type="password" inputmode="numeric" maxlength="6" autocomplete="off" data-testid="reset-pin-input"></label>' +
     '<p class="lberr" id="resetErr" role="alert"></p><button id="rDo" class="cta" data-testid="reset-save-button" style="width:100%">RESET PIN</button>';
   $('rName').value = nameHint || LB.name || '';
   const nm = () => $('rName').value.trim().replace(/\s+/g, ' ');
@@ -1852,7 +1905,7 @@ function lbResetPanel(body, nameHint) {
   $('rDo').addEventListener('click', () => {
     const name = nm(), code = $('rCode').value.trim(), pin = $('rPin').value.trim(), err = $('resetErr');
     if (!/^\d{6}$/.test(code)) { err.textContent = 'The code is the six digits in the email.'; return; }
-    if (!/^\d{4,8}$/.test(pin)) { err.textContent = 'New PIN must be 4 to 8 digits.'; return; }
+    if (!/^\d{6}$/.test(pin)) { err.textContent = 'New PIN must be 6 digits.'; return; }
     err.textContent = 'Resetting…'; $('rDo').disabled = true;
     lbApi({ action: 'reset', name, code, pin }).then(r => {
       if (r.ok && r.data) {
@@ -1866,9 +1919,9 @@ function lbResetPanel(body, nameHint) {
 }
 function lbBoardPanel(body) {
   body.innerHTML = '<ol id="boardList" class="board"></ol><p class="lbnote" id="boardMsg">Loading…</p>';
-  fetch(API + '?limit=25', { cache: 'no-store' }).then(r => { if (!r.ok) throw 0; return r.json(); }).then(d => {
+  fetch(CENTRAL + '/api/leaderboard?game=' + GAME + '&period=all&limit=25', { cache: 'no-store' }).then(r => { if (!r.ok) throw 0; return r.json(); }).then(d => {
     const list = $('boardList'); if (!list) return;
-    const me = LB.name.toLowerCase(), es = d.entries || [];
+    const me = LB.name.toLowerCase(), es = (d.entries || []).map(function (e) { return { name: e.username, score: e.best }; });
     es.forEach((e, i) => {
       const li = document.createElement('li'); if (me && String(e.name).toLowerCase() === me) li.className = 'me';
       const rk = document.createElement('span'); rk.className = 'rk'; rk.textContent = '#' + (i + 1);
