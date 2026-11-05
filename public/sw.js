@@ -1,4 +1,4 @@
-const CACHE = 'pawnforce-3.1.5';
+const CACHE = 'pawnforce-3.1.6';
 const ASSETS = ['./season-guard.js', './', './index.html', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png', './icons/icon-maskable-512.png'];
 
 self.addEventListener('install', e => {

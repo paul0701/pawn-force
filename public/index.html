@@ -1744,10 +1744,15 @@ function refreshMenu() {
 // its own UI and progress-merge; only the network layer is routed to central.
 const CENTRAL = 'https://agnostic.accounts.agnosticsolutions.co.uk';
 const GAME = 'pawn-force';
-let _auth = null; // central Bearer token for this session
+let _auth = null; // central Bearer token. Kept in localStorage (pf_token) so the PIN itself never has to be.
+try { _auth = localStorage.getItem('pf_token') || null; } catch (e) {}
 const LB = { name: '', pin: '', email: '', token: null, tokenP: null, pending: null, runId: 0 };
-try { LB.name = localStorage.getItem('pf_name') || ''; LB.pin = localStorage.getItem('pf_pin') || ''; LB.email = localStorage.getItem('pf_email') || ''; } catch (e) {}
-function lbSaveId() { try { localStorage.setItem('pf_name', LB.name); localStorage.setItem('pf_pin', LB.pin); localStorage.setItem('pf_email', LB.email || ''); } catch (e) {} }
+let _legacyPin = ''; // a PIN saved by an older version of this game: swapped for a token once, then deleted
+try { LB.name = localStorage.getItem('pf_name') || ''; _legacyPin = localStorage.getItem('pf_pin') || ''; LB.email = localStorage.getItem('pf_email') || ''; } catch (e) {}
+function lbSaveId() { try { localStorage.setItem('pf_name', LB.name); localStorage.setItem('pf_email', LB.email || ''); if (_auth) localStorage.setItem('pf_token', _auth); localStorage.removeItem('pf_pin'); } catch (e) {} }
+// The sign-in key was refused (it expired, or the PIN was changed): forget it and ask for a fresh sign-in.
+function lbExpired() { _auth = null; try { localStorage.removeItem('pf_token'); } catch (e) {} }
+const LB_EXPIRED = 'Your sign-in has run out. Tap your name and sign in again.';
 function lbWeekId() {
   var d = new Date(), t = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
   var day = t.getUTCDay() || 7; t.setUTCDate(t.getUTCDate() + 4 - day);
@@ -1784,18 +1789,19 @@ function lbApi(body) {
   }
   if (a === 'progress') {
     return cAuth(body.name, body.pin).then(ok => ok
-      ? cFetch('/api/sync', { auth: true, body: { game: GAME, state: body.progress } }).then(r => ({ ok: r.ok, status: r.status, data: { progress: (r.data && r.data.state) || {} } }))
+      ? cFetch('/api/sync', { auth: true, body: { game: GAME, state: body.progress } }).then(r => { if (r.status === 401) lbExpired(); return { ok: r.ok, status: r.status, data: { progress: (r.data && r.data.state) || {} } }; })
       : { ok: false, status: 401, data: {} });
   }
   if (a === 'submit') {
     const score = Math.floor(Number(body.score) || 0), wk = lbWeekId();
     return cAuth(body.name, body.pin).then(ok => ok
       ? cFetch('/api/sync', { auth: true, body: { game: GAME, best: score, week: wk, week_best: score } }).then(r => {
+          if (r.status === 401) { lbExpired(); return { ok: false, status: 401, data: { message: LB_EXPIRED } }; }
           if (!(r.ok && r.data)) return { ok: false, status: r.status, data: { message: (r.data && r.data.detail) || 'The leaderboard rejected that score.' } };
           const best = Number(r.data.best) || 0;
           return { ok: true, status: 200, data: { improved: score >= best, rank: r.data.rank, best } };
         })
-      : { ok: false, status: 401, data: { message: 'Sign in to post a score.' } });
+      : { ok: false, status: 401, data: { message: body.name ? LB_EXPIRED : 'Sign in to post a score.' } });
   }
   if (a === 'forgot') return cFetch('/api/auth/forgot', { body: { username: body.name } });
   if (a === 'reset') return cFetch('/api/auth/reset', { body: { username: body.name, code: body.code, pin: body.pin } }).then(r => { if (r.ok && r.data && r.data.token) _auth = r.data.token; return r; });
@@ -1804,6 +1810,16 @@ function lbApi(body) {
 function lbBegin() {
   const id = ++LB.runId; LB.token = null; LB.pending = null; $('lbStatus').textContent = '';
   LB.tokenP = lbApi({ action: 'start' }).then(r => { if (r.ok && r.data && r.data.token && LB.runId === id) LB.token = r.data.token; }).catch(() => {});
+}
+// Players who signed in before this change still have their PIN saved here. Swap it for a key once, then delete it.
+function lbMigratePin() {
+  const pin = _legacyPin; _legacyPin = '';
+  if (_auth) { try { localStorage.removeItem('pf_pin'); } catch (e) {} return; }
+  if (!pin || !LB.name) return;
+  cFetch('/api/auth/login', { body: { username: LB.name, pin } }).then(r => {
+    if (r.ok && r.data && r.data.token) { _auth = r.data.token; lbSaveId(); lbPushProgress(); }
+    else if (r.status === 401 || r.status === 403 || r.status === 404) { try { localStorage.removeItem('pf_pin'); } catch (e) {} }
+  }).catch(() => {});   // offline or the service is down: leave it and try again next visit
 }
 function lbStatus(t) { $('lbStatus').textContent = t; }
 function lbWho() { $('nameBtn').textContent = LB.name ? 'Name: ' + LB.name : 'Set name'; $('addBtn').textContent = LB.name ? 'Change name' : 'Set name'; }
@@ -1835,7 +1851,7 @@ function lbMergeIn(pr) {
   if (changed) { persist(); try { refreshMenu(); } catch (e) {} }
 }
 function lbPushProgress() {
-  if (!LB.name || !LB.pin) return Promise.resolve();
+  if (!LB.name || !_auth) return Promise.resolve();
   return lbApi({ action: 'progress', name: LB.name, pin: LB.pin, progress: lbProgressOut() })
     .then(r => { if (r.ok && r.data) lbMergeIn(r.data.progress); }).catch(() => {});
 }
@@ -1864,7 +1880,7 @@ function lbNamePanel(body) {
     '<p class="lbnote" style="font-size:12px;color:var(--muted)">Save an email and you can get a code to reset your PIN if you ever forget it, so you never lose your name or your best score. It is never shown on the leaderboard.</p>' +
     '<p class="lberr" id="nameErr" role="alert"></p><button id="nameSave" class="cta" data-testid="name-save-button" style="width:100%">SAVE</button>' +
     '<div class="row" style="margin-top:14px"><button id="forgotBtn" class="ghost" data-testid="forgot-pin-button">Forgot PIN?</button></div>';
-  $('nameIn').value = LB.name; $('pinIn').value = LB.pin;
+  $('nameIn').value = LB.name; $('pinIn').value = '';
   $('emailIn').placeholder = LB.email ? 'Saved: ' + LB.email + ' (type to change)' : 'Only used if you forget your PIN';
   $('forgotBtn').addEventListener('click', () => { const n = $('nameIn').value.trim(); openPanel('reset', n); });
   const save1 = () => {
@@ -1876,7 +1892,7 @@ function lbNamePanel(body) {
     err.textContent = 'Checking…'; $('nameSave').disabled = true;
     lbApi({ action: 'claim', name, pin, email }).then(r => {
       if (r.ok && r.data) {
-        LB.name = r.data.name || name; LB.pin = pin; LB.email = r.data.email || ''; lbSaveId(); lbSyncBest(r.data.best); lbMergeIn(r.data.progress); lbPushProgress();
+        LB.name = r.data.name || name; LB.email = r.data.email || ''; lbSaveId(); lbSyncBest(r.data.best); lbMergeIn(r.data.progress); lbPushProgress();
         lbWho(); $('panel').classList.add('hidden');
         if (LB.pending) { $('addBtn').classList.add('hidden'); lbSubmit(); }
       } else err.textContent = (r.data && r.data.message) || 'Could not save that name.';
@@ -1910,7 +1926,7 @@ function lbResetPanel(body, nameHint) {
     err.textContent = 'Resetting…'; $('rDo').disabled = true;
     lbApi({ action: 'reset', name, code, pin }).then(r => {
       if (r.ok && r.data) {
-        LB.name = r.data.name || name; LB.pin = pin; LB.email = r.data.email || LB.email; lbSaveId(); lbWho(); lbSyncBest(r.data.best); lbMergeIn(r.data.progress); lbPushProgress();
+        LB.name = r.data.name || name; LB.email = r.data.email || LB.email; lbSaveId(); lbWho(); lbSyncBest(r.data.best); lbMergeIn(r.data.progress); lbPushProgress();
         $('panel').classList.add('hidden');
         if (LB.pending) { $('addBtn').classList.add('hidden'); lbSubmit(); } else lbStatus('PIN reset. You are signed in as ' + LB.name + '.');
       } else err.textContent = (r.data && r.data.message) || 'Could not reset the PIN.';
@@ -2070,7 +2086,7 @@ if (DEBUG) {
 }
 
 // boot
-lbWho(); lbPushProgress(); makeOrb(); makeClockSpr(); layout(); initScenery(); refreshMute(); refreshMenu();
+lbWho(); lbMigratePin(); lbPushProgress(); makeOrb(); makeClockSpr(); layout(); initScenery(); refreshMute(); refreshMenu();
 requestAnimationFrame(frame);
 })();
 </script>
